@@ -705,6 +705,144 @@ def sv_cross_ref_filter(
 
 
 @cli.command()
+@click.option(
+    "-n", "--name", required=False, default="test", type=str, help="test"
+)
+@click.option(
+    "-l", "--svlen", required=False, default="100", type=str, help="minimum sv length"
+)
+@click.option(
+   "-p", "--platform", required=False, default="hifi", type=str, help="sequencing platform (default:hifi)"
+)
+@click.option(
+    "-r",
+    "--ratio",
+    required=False,
+    default=0.8,  # NOTE: in js this might be a bug, these ratio name looks confusing
+    type=float,
+    help="read SVs longer than svlen*FLOAT",
+)
+@click.option("-c", required=False, default=3, type=int, help="minimum sv counts")
+@click.option("-g", required=False, default=5, type=int, help="min group read count")
+@click.option("--uc", required=False, default=5, type=int, help="union sv counts")
+@click.option("-F", "--ignoreflt", is_flag=True, help="ignore VCF filter")
+@click.option("-G", "--gt", is_flag=True, help="check GT")
+@click.option("-w", required=False, default=500, type=int, help="window size")
+@click.option("-m", required=False, default=0.6, type=float, help="min sv length ratio")
+@click.option("-b", required=False, default=None, type=str, help="union and evaluated within the high confident bed file")
+@click.option("--maskb", required=False, default=None, type=str, help="centromere bed file to mask the grch38-based sv signal")
+@click.option("--mm2", required=True, default=None, type=str, help="minimap2 path")
+@click.option("--mg", required=True, default=None, type=str, help="minigraph path")
+@click.option("--vcf", type=str, nargs=1, required=True, help="Customized sv calling from sniffles2 that map SV to read names")
+@click.option("--readid_tsv", type=str, nargs=1, required=True, help="the same as --vcf")
+@click.argument("bamfile", type=str, nargs=1)
+@click.argument("ref", type=str, nargs=1)
+@click.argument("dad_hap1_denovo_ref", type=str, nargs=1)
+@click.argument("dad_hap2_denovo_ref", type=str, nargs=1)
+@click.argument("mom_hap1_denovo_ref", type=str, nargs=1)
+@click.argument("mom_hap2_denovo_ref", type=str, nargs=1)
+@click.argument("workdir", nargs=1)
+def sv_trio_filter(
+    name, svlen, platform, ratio, c, uc, g,
+    ignoreflt, gt, w, m, b, maskb,
+    mm2, mg,
+    vcf,
+    readid_tsv,
+    bamfile,
+    ref,
+    dad_hap1_denovo_ref,
+    dad_hap2_denovo_ref,
+    mom_hap1_denovo_ref,
+    mom_hap2_denovo_ref,
+    workdir
+):
+    """use samtools + seqtk + mappy to filter somatic SV with real-time alignment breakpoint evidences to denovo assembly """
+    print(vcf)
+    print(readid_tsv)
+
+    #vcf = vcf[0]
+    #readid_tsv = readid_tsv[0]
+    from .filtercaller import MinisvReadsTrio
+    asm_read_cutoff = c
+
+    minisv_reads = MinisvReadsTrio(vcf, readid_tsv, bamfile, ref, dad_hap1_denovo_ref, dad_hap2_denovo_ref, mom_hap1_denovo_ref, mom_hap2_denovo_ref, workdir, asm_read_cutoff, platform, mm2, mg)
+    min_len = parseNum(svlen)
+
+    min_read_len = math.floor(min_len * ratio + 0.499)
+    minisv_reads.extract_read_ids(b, min_len, min_read_len, c, ignoreflt, gt)
+    minisv_reads.extract_reads()
+
+    #NOTE:svcall+l
+    #minisv_reads.align_reads_to_grch38()
+  
+    #use svcall+s
+    minisv_reads.align_reads_to_self()
+    #minisv_reads.align_reads_to_graph()
+
+    # getsv options
+    options = opt(
+        min_mapq=0,
+        min_mapq_end=0,
+        min_len=min_len,
+        min_frac=0.7,
+        max_cnt_10k=5,
+        polyA_pen=5,
+        min_aln_len_end=2000,
+        min_aln_len_mid=50,
+        name=name,
+        cen={}
+    )
+    minisv_reads.parse_raw_sv_self(options)
+
+    options.min_mapq = 5
+    options.min_mapq_end = 30
+
+    #minisv_reads.parse_raw_sv_grch38(options)
+    #minisv_reads.parse_raw_sv_graph(options)
+
+    # only svcall + g
+    #      svcall + s
+    #      svcall + gs
+    #minisv_reads.isec_g(options, w)
+    #minisv_reads.isec_s(options, w)
+    #minisv_reads.isec_gs(options, w)
+
+    print(w)
+    for cutoff in range(int(c), int(uc)+1):
+        options = EvalOpt(
+            only_readname=False,
+            min_len=parseNum(svlen),
+            min_count=cutoff,
+            win_size=parseNum(str(w)),
+            read_len_ratio=ratio,
+            min_len_ratio=m,  # NOTE: the option are not input
+            dbg=False,
+            bed=gc_read_bed(b) if b is not None else None,
+            print_err=False,
+            print_all=True,
+            min_vaf=0,
+            check_gt=False,
+            merge=False,
+            ignore_flt=False,
+            svid=""
+        )
+        minisv_reads.othercaller_filterasm(options)
+
+    ####options = unionopt(
+    ####    bed=b,
+    ####    min_len=min_len,
+    ####    read_min_count=uc, # 
+    ####    group_min_count=g,
+    ####    read_len_ratio=ratio,
+    ####    win_size=w,
+    ####    min_len_ratio=m,
+    ####    print_sv=True
+    ####)
+    ####minisv_reads.union_filtered_vcf(min_read_len, options)
+    minisv_reads.save_timings()
+
+
+@cli.command()
 @click.option("-d", is_flag=True, help="verbose option for debug")
 @click.option("-b", type=click.Path(exists=True), help="bed to restrict the comparison")
 @click.option(

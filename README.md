@@ -64,6 +64,7 @@ matched normal.
   - [Large somatic SVs in tumor-only samples](#call-tonly)
   - [Mosaic SVs](#call-mosaic)
 - [Generic filtering for other caller](#filter)
+- [Trio filtering for sniffles2](#trio_filtering)
 - [Ensembling filtered caller results](#ensemble)
 - [Comparing SVs](#compare)
 - [Filtering interface](#filtering)
@@ -413,6 +414,15 @@ l+g+s_union_dedup.msv  l+s_union_dedup.msv    nanomonsv_l+g_5_filtered.stat    n
 l+g+s_union.msv        l+s_union.msv          nanomonsv_l+g_5_filtered.vcf     nanomonsv_l+s_3_filtered.vcf     savana_l+g_4_filtered.stat     savana_l+g+s_5_filtered.stat  severus_l+g_3_filtered.stat  severus_l+g+s_4_filtered.stat  severus_l+s_5_filtered.stat    sniffles2_l+g+s_3_filtered.stat  sniffles2_l+s_4_filtered.stat
 l+g+s_union_stat.msv   l+s_union_stat.msv     nanomonsv_l+g+s_3_filtered.stat  nanomonsv_l+s_4_filtered.stat    savana_l+g_4_filtered.vcf      savana_l+g+s_5_filtered.vcf   severus_l+g_3_filtered.vcf   severus_l+g+s_4_filtered.vcf   severus_l+s_5_filtered.vcf     sniffles2_l+g+s_3_filtered.vcf   sniffles2_l+s_4_filtered.vcf
 ```
+
+## <a name="trio_filtering"></a>Trio WGS filtering interface alone
+
+Suppose we have a trio of family long read WGS, and we generated the diplod denovo assembly for the parents, we could use this interface to reduce false positives based on the dad and mom's denovo assembly
+
+```sh
+minisv sv-trio-filter --mm2 minimap2 --mg minigraph --vcf test.vcf --readid_tsv test.vcf test.bam standard_ref.fna dad_hap1.fasta dad_hap2.fasta mom_hap1.fasta mom_hap2.fasta trio_output_filtered
+```
+
 
 ## <a name="limit"></a>Limitations
 

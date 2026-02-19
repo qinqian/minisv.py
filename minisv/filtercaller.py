@@ -961,4 +961,336 @@ class MinisvReads:
         print(f"   Total time: {total_time:.2f} seconds")
         print(f"   Highest memory used: {overall_max_mem:.1f} MB")
 
+
+class MinisvReadsTrio:
+    def __init__(self, som_vcfs, readid_tsvs, bam_path, ref, dad_hap1_denovo_ref_path, dad_hap2_denovo_ref_path, mom_hap1_denovo_ref_path, mom_hap2_denovo_ref_path, 
+                 work_dir="minisv_work", filtered_readcount_cutoff=2, platform='hifi', mm2="minimap2", mg="minigraph"):
+        self.som_vcfs = [som_vcfs]
+        self.readid_tsvs = [readid_tsvs]
+        self.mm2 = mm2
+        self.mg = mg
+
+        self.bam_path = Path(bam_path)
+
+        self.ref = Path(ref)
+        self.dad_hap1_denovo_ref_path = Path(dad_hap1_denovo_ref_path)
+        self.dad_hap2_denovo_ref_path = Path(dad_hap2_denovo_ref_path)
+
+        self.mom_hap1_denovo_ref_path = Path(mom_hap1_denovo_ref_path)
+        self.mom_hap2_denovo_ref_path = Path(mom_hap2_denovo_ref_path)
+
+        self.work_dir = Path(work_dir)
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self.filtered_readcount_cutoff = filtered_readcount_cutoff
+        self.platform = platform
+        self.timings = []
+
+    def extract_read_ids(self, bed, min_len, min_read_len, min_count, ignore_flt, check_gt):
+        """ only extract somatic SV read ids """
+        with Timer("extract_read_ids", self.timings):
+            if bed is not None and not isinstance(bed, dict):
+                bed = gc_read_bed(bed)
+
+            self.read_ids_file = self.work_dir / "readid.names"
+            som_read_ids = set()
+
+            self.read_id_dict = {}
+            for (readid_tsv, vcf) in zip(self.readid_tsvs, self.som_vcfs):
+                assert os.path.exists(readid_tsv), f"{readid_tsv} not exists"
+                assert os.path.exists(vcf), f"{vcf} not exists"
+
+                self.read_id_dict |= parse_readids(readid_tsv)
+                vcf = gc_parse_sv(vcf, min_read_len, min_count, ignore_flt, check_gt)
+
+                for i in range(len(vcf)):
+                    t = vcf[i]
+                    # Not long enough for non-BND type
+                    # NOTE: here use 100bp as the default length instead of 80
+                    if t.SVTYPE != "BND" and abs(t.SVLEN) < min_len:
+                        continue
+
+                    if t.SVTYPE == "BND" and t.ctg == t.ctg2 and abs(t.SVLEN) < min_len:
+                        continue
+
+                    if t.count > 0 and t.count < min_count:
+                        continue
+
+                    if bed is not None:
+                        if t.ctg not in bed or t.ctg2 not in bed:
+                            continue
+                        if len(iit_overlap(bed[t.ctg], t.pos, t.pos + 1)) == 0:
+                            continue
+                        if len(iit_overlap(bed[t.ctg2], t.pos2, t.pos2 + 1)) == 0:
+                            continue
+
+                    query_svid = str(parse_svid(t.svid))
+                    assert query_svid in self.read_id_dict, 'somatic sv not in read id table'
+                    som_read_ids.add(query_svid)
+
+            read_names = set()
+            for s in list(som_read_ids):
+                read_names |= set(self.read_id_dict[s])
+       
+            with open(self.read_ids_file, "w") as fin:
+                for i in sorted(list(read_names)):
+                    fin.write(f"{i}\n")
+   
+    def extract_reads(self):
+        """samtools fastq aln.bam | seqtk subseq - read-names.txt > reads.fq"""
+        with Timer("extract_reads", self.timings):
+            self.fastq_out = self.work_dir / "som_reads.fq.gz"
+            if os.path.exists(self.fastq_out):
+                return
+
+            cmd = f"samtools fastq {self.bam_path} | seqtk subseq - {self.read_ids_file} | gzip  > {self.fastq_out}"
+            subprocess.run(cmd, shell=True, check=True)
+            print(f"Reads extracted to {self.fastq_out}")
+            return
+
+    def build_pooled_reference(self, out_fa="pooled_reference.fa"):
+        with Timer("build_pooled_reference", self.timings):
+            self.pooled_ref = self.work_dir / out_fa
+            with open(self.pooled_ref, "w") as out:
+                for ref in [self.mom_hap1_denovo_ref_path, self.mom_hap2_denovo_ref_path, self.mom_hap1_denovo_ref_path, self.mom_hap2_denovo_ref_path]:
+                    with gzip.open(ref, "rt") as f:
+                        out.write(f.read())
+            return mp.Aligner(str(self.pooled_ref)) # preset??
+
+    def align_reads_to_self(self, paf='denovo_aligned.paf.gz'):
+        with Timer("align_reads_to_denovo", self.timings):
+            self.paf_out = self.work_dir / paf
+            if os.path.exists(self.paf_out):
+                return
+
+            if self.platform == 'hifi':
+                cmd = f"{self.mm2} --ds -t 4 -cx map-hifi -s50 <(cat {self.dad_hap1_denovo_ref_path} {self.dad_hap2_denovo_ref_path} {self.mom_hap1_denovo_ref_path} {self.mom_hap2_denovo_ref_path}) -I100g --secondary=no {self.fastq_out} | gzip - > {self.paf_out}" 
+            else:
+                cmd = f"{self.mm2} --ds -t 4 -cx lr:hq <(cat {self.dad_hap1_denovo_ref_path} {self.dad_hap2_denovo_ref_path} {self.mom_hap1_denovo_ref_path} {self.mom_hap2_denovo_ref_path}) -I100g --secondary=no {self.fastq_out} | gzip - > {self.paf_out}" 
+            #cmd = f"{self.mm2} --ds -t 4 -cx lr:hq <(zcat {self.hap1_denovo_ref_path} {self.hap2_denovo_ref_path}) -I100g --secondary=no {self.fastq_out} | gzip - > {self.paf_out}" 
+            subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
+            print(f"aligned to self assembly")
+
+    def build_reference(self):
+        return mp.Aligner(str(self.ref))
+
+    def align_reads_to_grch38(self, paf='grch38_aligned.paf.gz'):
+        with Timer("align_reads_to_grch38", self.timings):
+            self.grch38_paf_out = self.work_dir / paf
+            if os.path.exists(self.grch38_paf_out):
+                return
+
+            if self.platform == 'hifi':
+                cmd = f"{self.mm2} --ds -t 4 -cx map-hifi -s50 {self.ref} {self.fastq_out} | gzip - > {self.grch38_paf_out}" 
+            else:
+                cmd = f"{self.mm2} --ds -t 4 -cx lr:hq {self.ref} {self.fastq_out} | gzip - > {self.grch38_paf_out}" 
+            subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
+            print(f"aligned to grch38")
+
+    def align_reads_to_graph(self, gaf='denovo_aligned.gaf.gz'):
+        with Timer("align_reads_to_graph", self.timings):
+            self.gaf_out = self.work_dir / gaf
+            if os.path.exists(self.gaf_out):
+                return
+            cmd = f"{self.mg} -cxlr -t 4 {self.graph_ref_path} {self.fastq_out} | gzip - > {self.gaf_out}"
+            subprocess.run(cmd, shell=True, check=True, executable="/bin/bash")
+            print(f"Reads aligned to {self.graph_ref_path} to generate {self.gaf_out}")
+            return
+
+    def parse_raw_sv_grch38(self, opt, gsv='grch38.gsv.gz',
+                            filtered_grch38_gsv='grch38_filtered.gsv.gz'):
+        with Timer("parse_raw_sv_grch38", self.timings):
+            self.grch38_gsv_out = self.work_dir / gsv
+            self.filtered_grch38_gsv_out = self.work_dir / filtered_grch38_gsv
+            print("**********************")
+            print(self.filtered_grch38_gsv_out)
+            f = gzip.open(self.grch38_gsv_out, 'wt')
+            load_reads(str(self.grch38_paf_out), opt, f)
+            f.close()
+
+            ##opt.bed = gc_read_bed(opt.bed) if b is not None else None
+            print("**************")
+            print(opt.cen)
+            print(opt.bed)
+            print("**************")
+
+            if opt.bed is not None and not isinstance(opt.bed, dict):
+                opt.bed = gc_read_bed(opt.bed)
+
+            if opt.bed is not None or opt.cen is not None:
+                f = gzip.open(self.filtered_grch38_gsv_out, 'wt')
+                with gzip.open(self.grch38_gsv_out, "rt") as fin:
+                    for line in fin:
+                        if opt.cen is not None:
+                            t = line.strip().split("\t")
+                            v = parse_sv(t)
+
+                            #NOTE: test if we do not use centromere filtering
+                            ## Step 1. post filter grch38-based sv signals by centromere
+                            if v.cen_overlap is not None and v.cen_overlap > 0:
+                                continue
+                            if v.cen_dist is not None and v.cen_dist <= 5e5:
+                                continue
+
+                            ### Step 2. filter by overlapping with high conf region
+                            #if opt.bed is not None:
+                            #    if v.ctg not in opt.bed or v.ctg2 not in opt.bed:
+                            #        continue
+                            #    if len(iit_overlap(opt.bed[v.ctg], v.pos, v.pos + 1)) == 0:
+                            #        continue
+                            #    if len(iit_overlap(opt.bed[v.ctg2], v.pos2, v.pos2 + 1)) == 0:
+                            #        continue
+                            # TODO Step 3: filtered by SV typing consistency between minisv/severus/nanomonsv...
+                            print(line.strip(), file=f)
+                f.close()
+            return
+
+    def parse_raw_sv_self(self, opt, gsv='denovo.gsv.gz'):
+        with Timer("parse_raw_sv_denovo", self.timings):
+            self.denovo_gsv_out = self.work_dir / gsv
+
+            f = gzip.open(self.denovo_gsv_out, 'wt')
+            load_reads(str(self.paf_out), opt, f)
+            f.close()
+            return
+
+    def parse_raw_sv_graph(self, opt, gsv='graph.gsv.gz'):
+        with Timer("parse_raw_sv_graph", self.timings):
+            self.graph_gsv_out = self.work_dir / gsv
+
+            f = gzip.open(self.graph_gsv_out, 'wt')
+            load_reads(str(self.gaf_out), opt, f)
+            f.close()
+            return
+
+    def isec_g(self, opt, w, msv='l+g.gsv.gz'):
+        # l + g
+        with Timer("isec_graph", self.timings):
+            self.isec_graph_out = self.work_dir / msv
+
+            f = gzip.open(self.isec_graph_out, 'wt')
+            if opt.bed is not None or opt.cen is not None:
+                isec(w, [self.filtered_grch38_gsv_out, self.graph_gsv_out], f)
+            else:
+                isec(w, [self.grch38_gsv_out, self.graph_gsv_out], f)
+            f.close()
+            return
+
+    def isec_s(self, opt, w, msv='l+s.gsv.gz'):
+        # l+s
+        with Timer("isec_graph", self.timings):
+            self.isec_denovo_out = self.work_dir / msv
+
+            f = gzip.open(self.isec_denovo_out, 'wt')
+            if opt.bed is not None or opt.cen is not None:
+                isec(w, [self.filtered_grch38_gsv_out, self.denovo_gsv_out], f)
+            else:
+                isec(w, [self.grch38_gsv_out, self.denovo_gsv_out], f)
+            f.close()
+            return
+
+    def isec_gs(self, opt, w, msv='gs.gsv.gz'):
+        # l+s
+        with Timer("isec_gs", self.timings):
+            self.isec_gs_out = self.work_dir / msv
+
+            f = gzip.open(self.isec_gs_out, 'wt')
+            #if opt.bed is not None or opt.cen is not None:
+            #    isec(w, [self.filtered_grch38_gsv_out, self.graph_gsv_out, self.denovo_gsv_out], f)
+            #else:
+            #    isec(w, [self.grch38_gsv_out, self.graph_gsv_out, self.denovo_gsv_out], f)
+            isec(w, [self.graph_gsv_out, self.denovo_gsv_out], f)
+            f.close()
+            return
+
+    def parse_ids_from_gsv(self, msv):
+        with gzip.open(self.work_dir / msv, 'rt') as fin:
+            for line in fin:
+                t = line.strip().split('\t')
+
+                is_bp = False
+                if re.match(r"[><]", t[2]):
+                    is_bp = True
+
+                col_info = 8 if is_bp else 6
+                name = t[col_info-3]
+                yield name
+
+    def othercaller_filterasm(self, opt):
+        """ the same interface as the former filterasm 
+        """
+
+        # filter each caller separately instead of jointly 
+        # joint filtering is error-prone
+        ls = self.work_dir / Path("denovo.gsv.gz")
+
+        for cat in ['l+s']:
+            filtered_vcfs = [ str(self.work_dir / Path(f"{caller}_{cat}_{opt.min_count}_filtered.vcf")) for caller in ['sniffles2'] ]
+            filtered_vcf_stats = [ str(self.work_dir / Path(f"{caller}_{cat}_{opt.min_count}_filtered.stat")) for caller in ['sniffles2'] ]
+
+            if cat == 'l+s':
+                msvasm = ls
+            if cat == 'l+g':
+                msvasm = lg
+            if cat == 'l+g+s':
+                msvasm = lgs
+            for (readid_tsv, vcf, filtered_vcf, outstat) in zip(self.readid_tsvs, self.som_vcfs, filtered_vcfs, filtered_vcf_stats):
+                filtered_vcf = open(filtered_vcf, 'w')
+                othercaller_filterasm(vcf, opt, readid_tsv, msvasm, outstat, consensus_sv_ids="", out_filtered_vcf=filtered_vcf)
+                filtered_vcf.close()
+        return
+
+    def union_filtered_vcf(self, read_min_len, opt):
+        from .union import union_sv
+
+        opt.print_sv = True
+        f = open(self.work_dir / Path(f"l_only_union.msv"), 'w')
+        union_sv(self.som_vcfs[:3], read_min_len, opt, file_handler=f)
+        f.close()
+        opt.print_sv = False
+        f = open(self.work_dir / Path(f"l_only_union_stat.msv"), 'w')
+        union_sv(self.som_vcfs[:3], read_min_len, opt, file_handler=f)
+        f.close()
+
+        for cat in categories:
+            filtered_vcfs = [ str(self.work_dir / Path(f"{caller}_{cat}_{opt.read_min_count}_filtered.vcf")) for caller in callers ]
+
+            opt.print_sv = True
+            f = open(self.work_dir / Path(f"{cat}_union.msv"), 'w')
+            union_sv(filtered_vcfs, read_min_len, opt, file_handler=f)
+            f.close()
+
+            opt.print_sv = False
+            f = open(self.work_dir / Path(f"{cat}_union_stat.msv"), 'w')
+            union_sv(filtered_vcfs, read_min_len, opt, file_handler=f)
+            f.close()
+
+            f = open(self.work_dir / Path(f"{cat}_union_dedup.msv"), 'w')
+            insilico_truth(str(self.work_dir / Path(f"{cat}_union.msv")), f)
+            f.close()
+
+
+    def save_timings(self, tsv_path=None):
+        """Save collected timings to a TSV file"""
+        if not self.timings:
+            print("[WARNING] No timing data collected.")
+            return
+
+        if tsv_path is None:
+            tsv_path = self.work_dir / "minisv_timings.tsv"
+
+        fieldnames = ["step", "time_sec", "max_memory_mb"]
+
+        with open(tsv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
+            writer.writeheader()
+            for record in self.timings:
+                writer.writerow(record)
+
+        total_time = sum(r["time_sec"] for r in self.timings)
+        overall_max_mem = max(r["max_memory_mb"] for r in self.timings)
+
+        print(f"\n[SUMMARY] Timings saved to: {tsv_path}")
+        print(f"   Total time: {total_time:.2f} seconds")
+        print(f"   Highest memory used: {overall_max_mem:.1f} MB")
+
 ## new SV filter from bam -> fastq reads -> gsv
