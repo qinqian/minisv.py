@@ -569,6 +569,108 @@ def filterasm(
     "-l", "--svlen", required=False, default="100", type=str, help="minimum sv length"
 )
 @click.option(
+    "-r",
+    "--ratio",
+    required=False,
+    default=0.8,  # NOTE: in js this might be a bug, these ratio name looks confusing
+    type=float,
+    help="read SVs longer than svlen*FLOAT",
+)
+@click.option("-c", required=False, default=3, type=int, help="minimum sv counts")
+@click.option("-g", required=False, default=5, type=int, help="min group read count")
+@click.option("--uc", required=False, default=5, type=int, help="union sv counts")
+@click.option("-F", "--ignoreflt", is_flag=True, help="ignore VCF filter")
+@click.option("-G", "--gt", is_flag=True, help="check GT")
+@click.option("-w", required=False, default=500, type=int, help="window size")
+@click.option("-m", required=False, default=0.6, type=float, help="min sv length ratio")
+@click.option("-b", required=False, default=None, type=str, help="union and evaluated within the high confident bed file")
+@click.option("--maskb", required=False, default=None, type=str, help="centromere bed file to mask the grch38-based sv signal")
+@click.option("--max_diff_len", required=False, default=1000, type=int, help="maximum indel length difference")
+@click.option("--vcf", type=str, nargs=4, required=True, help="Exactly 4 VCFs following the order of severus savana nanomonsv sniffles2")
+@click.option("--readid_tsv", type=str, nargs=4, required=True, help="Exactly 4 read-id TSV files corresponding to the VCFs")
+@click.argument("existing_workdir", nargs=1)
+@click.argument("new_workdir", nargs=1)
+def test_sv_filter(
+    name, svlen, ratio, c, uc, g,
+    ignoreflt, gt, w, m, b, maskb, max_diff_len,
+    vcf, readid_tsv,
+    existing_workdir, new_workdir
+):
+    """Test different cutoffs for SV filtering with existing work directory"""
+    from .filtercaller import MSVTestCutOff
+    asm_read_cutoff = c
+
+    minisv_reads = MSVTestCutOff(vcf, readid_tsv, existing_workdir, new_workdir, asm_read_cutoff)
+    min_len = parseNum(svlen)
+    min_read_len = math.floor(min_len * ratio + 0.499)
+    minisv_reads.extract_read_ids(b, min_len, min_read_len, c, ignoreflt, gt)
+
+    # getsv options
+    options = opt(
+        min_mapq=0,
+        min_mapq_end=0,
+        min_len=min_len,
+        min_frac=0.7,
+        max_cnt_10k=5,
+        polyA_pen=5,
+        min_aln_len_end=2000,
+        min_aln_len_mid=50,
+        name=name,
+        cen={}
+    )
+    ##minisv_reads.parse_raw_sv_self(options)
+    if maskb is not None:
+        parse_centromere(maskb, options.cen)
+    if b is not None:
+        options.bed = b
+
+    options.min_mapq = 5
+    options.min_mapq_end = 30
+
+    for cutoff in range(int(c), int(uc)+1):
+        options = EvalOpt(
+            only_readname=False,
+            min_len=parseNum(svlen),
+            min_count=cutoff,
+            win_size=parseNum(str(w)),
+            read_len_ratio=ratio,
+            min_len_ratio=m,  # NOTE: the option are not input
+            dbg=False,
+            bed=gc_read_bed(b) if b is not None else None,
+            print_err=False,
+            print_all=True,
+            min_vaf=0,
+            check_gt=False,
+            merge=False,
+            ignore_flt=False,
+            svid=""
+        )
+        options.max_diff_len = max_diff_len
+        minisv_reads.othercaller_filterasm(options)
+
+
+    options = unionopt(
+        bed=b,
+        min_len=min_len,
+        read_min_count=uc, # 
+        group_min_count=g,
+        read_len_ratio=ratio,
+        win_size=w,
+        min_len_ratio=m,
+        print_sv=True
+    )
+    minisv_reads.union_filtered_vcf(min_read_len, options)
+    minisv_reads.save_timings()
+
+
+@cli.command()
+@click.option(
+    "-n", "--name", required=False, default="test", type=str, help="test"
+)
+@click.option(
+    "-l", "--svlen", required=False, default="100", type=str, help="minimum sv length"
+)
+@click.option(
    "-p", "--platform", required=False, default="hifi", type=str, help="sequencing platform (default:hifi)"
 )
 @click.option(
@@ -588,6 +690,7 @@ def filterasm(
 @click.option("-m", required=False, default=0.6, type=float, help="min sv length ratio")
 @click.option("-b", required=False, default=None, type=str, help="union and evaluated within the high confident bed file")
 @click.option("--maskb", required=False, default=None, type=str, help="centromere bed file to mask the grch38-based sv signal")
+@click.option("--max_diff_len", required=False, default=1000, type=int, help="maximum indel length difference")
 @click.option("--mm2", required=True, default=None, type=str, help="minimap2 path")
 @click.option("--mg", required=True, default=None, type=str, help="minigraph path")
 @click.option("--vcf", type=str, nargs=4, required=True, help="Exactly 4 VCFs following the order of severus savana nanomonsv sniffles2")
@@ -600,7 +703,7 @@ def filterasm(
 @click.argument("workdir", nargs=1)
 def sv_cross_ref_filter(
     name, svlen, platform, ratio, c, uc, g,
-    ignoreflt, gt, w, m, b, maskb,
+    ignoreflt, gt, w, m, b, maskb, max_diff_len,
     mm2, mg,
     vcf,
     readid_tsv,
@@ -688,6 +791,7 @@ def sv_cross_ref_filter(
             ignore_flt=False,
             svid=""
         )
+        options.max_diff_len = max_diff_len
         minisv_reads.othercaller_filterasm(options)
 
     options = unionopt(
@@ -731,6 +835,7 @@ def sv_cross_ref_filter(
 @click.option("-m", required=False, default=0.6, type=float, help="min sv length ratio")
 @click.option("-b", required=False, default=None, type=str, help="union and evaluated within the high confident bed file")
 @click.option("--maskb", required=False, default=None, type=str, help="centromere bed file to mask the grch38-based sv signal")
+@click.option("--max_diff_len", required=False, default=1000, type=int, help="maximum indel length difference")
 @click.option("--mm2", required=True, default=None, type=str, help="minimap2 path")
 @click.option("--mg", required=True, default=None, type=str, help="minigraph path")
 @click.option("--vcf", type=str, nargs=1, required=True, help="Customized sv calling from sniffles2 that map SV to read names")
@@ -744,7 +849,7 @@ def sv_cross_ref_filter(
 @click.argument("workdir", nargs=1)
 def sv_trio_filter(
     name, svlen, platform, ratio, c, uc, g,
-    ignoreflt, gt, w, m, b, maskb,
+    ignoreflt, gt, w, m, b, maskb, max_diff_len,
     mm2, mg,
     vcf,
     readid_tsv,
@@ -826,6 +931,7 @@ def sv_trio_filter(
             ignore_flt=False,
             svid=""
         )
+        options.max_diff_len = max_diff_len
         minisv_reads.othercaller_filterasm(options)
 
     ####options = unionopt(
