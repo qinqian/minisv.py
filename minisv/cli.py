@@ -716,6 +716,7 @@ def test_sv_filter(
 @click.option("--max_diff_len", required=False, default=1000, type=int, help="maximum indel length difference")
 @click.option("--mm2", required=True, default=None, type=str, help="minimap2 path")
 @click.option("--mg", required=True, default=None, type=str, help="minigraph path")
+@click.option("--output_consensus", is_flag=True, default=False, help="also write consensus_union.msv, consensus_3caller_dedup.msv, and consensus_lost_by_{l+s,l+g}.msv to workdir")
 @click.option("--vcf", type=str, nargs=4, required=True, help="Exactly 4 VCFs following the order of severus savana nanomonsv sniffles2")
 @click.option("--readid_tsv", type=str, nargs=4, required=True, help="Exactly 4 read-id TSV files corresponding to the VCFs")
 @click.argument("bamfile", type=str, nargs=1)
@@ -727,6 +728,7 @@ def test_sv_filter(
 def sv_cross_ref_filter(
     name, svlen, platform, ratio, c, uc, g,
     ignoreflt, gt, w, m, b, maskb, max_diff_len,
+    output_consensus,
     mm2, mg,
     vcf,
     readid_tsv,
@@ -820,7 +822,7 @@ def sv_cross_ref_filter(
     options = unionopt(
         bed=b,
         min_len=min_len,
-        read_min_count=uc, # 
+        read_min_count=uc, #
         group_min_count=g,
         read_len_ratio=ratio,
         win_size=w,
@@ -828,6 +830,8 @@ def sv_cross_ref_filter(
         print_sv=True
     )
     minisv_reads.union_filtered_vcf(min_read_len, options)
+    if output_consensus:
+        minisv_reads.output_consensus(min_read_len, options)
     minisv_reads.save_timings()
 
 
