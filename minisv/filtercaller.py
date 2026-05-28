@@ -14,7 +14,6 @@ from .eval import (
     gc_parse_sv,
     iit_overlap,
     gc_read_bed,
-    gc_cmp_same_sv1,
     iit_sort_copy,
     iit_index,
     eval1,
