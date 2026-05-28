@@ -10,8 +10,16 @@ import math
 import warnings
 import re
 from .util import is_gzipped, is_vcf
-from .eval import gc_parse_sv, iit_overlap, gc_read_bed
-from .merge import parse_sv
+from .eval import (
+    gc_parse_sv,
+    iit_overlap,
+    gc_read_bed,
+    gc_cmp_same_sv1,
+    iit_sort_copy,
+    iit_index,
+    eval1,
+)
+from .merge import parse_sv, svinfo
 
 from .type import get_type, simple_type
 from pathlib import Path
@@ -205,6 +213,75 @@ def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
             continue
         print(line.strip(), file=out)
     f.close()
+
+
+def _parse_union_msv(path):
+    """Parse the 6-column .msv format that union_sv emits (via gc_sv2array).
+
+    Format: ctg \\t pos \\t ori \\t ctg2 \\t pos2 \\t info_string
+    where info_string carries SVTYPE/SVLEN/count/group_id/file_id/... .
+
+    gc_parse_sv cannot read this format — it requires 9 columns (col_info=8)
+    for breakpoint records. This is a tiny local parser that yields the
+    (svinfo, raw_line) pairs needed by _consensus_lost_by_filter.
+    """
+    pairs = []
+    if not os.path.exists(path):
+        return pairs
+    with open(path) as fh:
+        for line in fh:
+            if not line.strip() or line.startswith("#"):
+                continue
+            t = line.rstrip("\n").split("\t")
+            if len(t) < 6:
+                continue
+            info = t[5]
+            svtype_m = re.search(r"SVTYPE=([^\s;]+)", info)
+            svlen_m = re.search(r"SVLEN=(-?\d+)", info)
+            svtype = svtype_m.group(1) if svtype_m else None
+            svlen = int(svlen_m.group(1)) if svlen_m else 0
+            s = svinfo(
+                ctg=t[0], pos=int(t[1]), ctg2=t[3], pos2=int(t[4]),
+                ori=t[2], SVTYPE=svtype, SVLEN=svlen, count=1, vaf=1,
+            )
+            pairs.append((s, line.rstrip("\n")))
+    return pairs
+
+
+def _consensus_lost_by_filter(consensus_msv, target_msv, opt, file_handler=None):
+    """Emit lines from consensus_msv whose SV overlaps zero rows in target_msv.
+
+    Pure set-difference. Matching reuses the IIT lookup pattern from
+    gc_cmp_sv: a target's pos and pos2 are both indexed, so a consensus
+    rep matches if EITHER of its breakpoints falls within opt.win_size of
+    a target breakpoint AND gc_cmp_same_sv1 accepts the pair. This
+    correctly handles BNDs whose second breakpoint lies on a different
+    contig.
+
+    Inputs are union_sv's 6-col .msv format (parsed via _parse_union_msv,
+    not gc_parse_sv — see that helper's docstring). Eval-style call-quality
+    filters (min_len/min_count/min_vaf/opt.bed) are intentionally NOT
+    applied here: the consensus is already filtered upstream by
+    union_sv + insilico_truth.
+    """
+    target_pairs = _parse_union_msv(target_msv)
+    h = {}
+    for s, _raw in target_pairs:
+        if s.ctg not in h:
+            h[s.ctg] = []
+        if s.ctg2 not in h:
+            h[s.ctg2] = []
+        h[s.ctg].append({"st": s.pos, "en": s.pos + 1, "data": s})
+        h[s.ctg2].append({"st": s.pos2, "en": s.pos2 + 1, "data": s})
+    for ctg in h:
+        h[ctg] = iit_sort_copy(h[ctg])
+        iit_index(h[ctg])
+
+    for r, raw in _parse_union_msv(consensus_msv):
+        n = eval1(opt, h, r.ctg, r.pos, r) + eval1(opt, h, r.ctg2, r.pos2, r)
+        if n == 0:
+            print(raw, file=file_handler)
+
 
 def othercaller_filterasm(vcf_file, opt, readidtsv, msvasm, outstat, consensus_sv_ids, out_filtered_vcf = None):
     """
