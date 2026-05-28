@@ -1050,6 +1050,39 @@ class MinisvReads:
             f.close()
 
 
+    def output_consensus(self, read_min_len, opt):
+        """Export the 3-caller raw consensus and the consensus subsets dropped
+        by the self-assembly (l+s) and pangenome (l+g) filters.
+
+        Consumes self.som_vcfs[:3] (severus/savana/nanomonsv) and the
+        {cat}_union.msv files written by self.union_filtered_vcf. Must be
+        called AFTER union_filtered_vcf.
+        """
+        from .union import union_sv
+
+        # 2a. Raw consensus: all-three-caller groups, then dedup to one rep per group.
+        consensus_union = self.work_dir / "consensus_union.msv"
+        opt.print_sv = True
+        with open(consensus_union, "w") as fh:
+            union_sv(self.som_vcfs[:3], read_min_len, opt,
+                     file_handler=fh, min_file_count=3)
+
+        consensus_dedup = self.work_dir / "consensus_3caller_dedup.msv"
+        with open(consensus_dedup, "w") as fh:
+            insilico_truth(str(consensus_union), fh)
+
+        # 2b. Per-filter lost subsets: consensus reps overlapping zero rows in
+        # the filter's union. l+s_union.msv and l+g_union.msv already exist on
+        # disk from union_filtered_vcf. Scope is intentionally l+s and l+g
+        # only (NOT l+g+s) per the locked design.
+        for cat in ["l+s", "l+g"]:
+            target = self.work_dir / f"{cat}_union.msv"
+            out_path = self.work_dir / f"consensus_lost_by_{cat}.msv"
+            with open(out_path, "w") as fh:
+                _consensus_lost_by_filter(str(consensus_dedup), str(target),
+                                          opt, file_handler=fh)
+
+
     def save_timings(self, tsv_path=None):
         """Save collected timings to a TSV file"""
         if not self.timings:
