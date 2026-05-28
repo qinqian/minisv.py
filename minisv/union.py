@@ -5,7 +5,7 @@ from .filtercaller import parse_readids, parse_svid, parse_msvasm, parse_msvasm_
 from .type import simple_type, get_type
 
 
-def union_sv(msvs, read_min_len, opt, file_handler=None):
+def union_sv(msvs, read_min_len, opt, file_handler=None, min_file_count=None):
     if opt.bed is not None and not isinstance(opt.bed, dict):
         opt.bed = gc_read_bed(opt.bed)
     sv = []
@@ -95,6 +95,8 @@ def union_sv(msvs, read_min_len, opt, file_handler=None):
         if has_bnd == False and max_len < opt.min_len:
             continue
         if not in_bed:
+            continue
+        if min_file_count is not None and bin(x).count("1") < min_file_count:
             continue
         cnt[x] += 1
         if opt.print_sv:
