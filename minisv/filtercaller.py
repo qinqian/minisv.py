@@ -3,6 +3,7 @@ import pandas as pd
 import csv
 import time
 import os
+import sys
 import mappy as mp
 from .regex import re_info
 import math
@@ -168,6 +169,42 @@ def parse_svid(svid):
         query_svid = svid
     return query_svid
         #raise Exception("not support yet")
+
+def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
+    """Drop caller VCF calls whose breakpoint overlaps a gnomAD-SV BED region.
+
+    Type-agnostic breakpoint overlap (no allele-frequency parsing). By default a
+    call is dropped if *either* breakpoint overlaps the BED; both_ends=True
+    requires both. The original VCF is re-emitted to ``out`` minus the dropped
+    calls; lines that gc_parse_sv never parses pass through unchanged.
+    """
+    if out is None:
+        out = sys.stdout
+
+    bed = gc_read_bed(gnomad_bed)
+    # parse permissively (min_len=0, min_count=0) so gnomAD overlap is the only filter
+    svs = gc_parse_sv(vcf_file, 0, 0, opt.ignore_flt, False)
+
+    drop = set()
+    for t in svs:
+        hit1 = t.ctg in bed and len(iit_overlap(bed[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0
+        hit2 = t.ctg2 in bed and len(iit_overlap(bed[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0
+        if (hit1 and hit2) if both_ends else (hit1 or hit2):
+            drop.add(parse_svid(t.svid))
+
+    if is_gzipped(vcf_file):
+        f = gzip.open(vcf_file, 'rt')
+    else:
+        f = open(vcf_file)
+    for line in f:
+        if line[0] == "#":
+            print(line.strip(), file=out)
+            continue
+        t = line.strip().split("\t")
+        if len(t) >= 3 and parse_svid(t[2]) in drop:
+            continue
+        print(line.strip(), file=out)
+    f.close()
 
 def othercaller_filterasm(vcf_file, opt, readidtsv, msvasm, outstat, consensus_sv_ids, out_filtered_vcf = None):
     """

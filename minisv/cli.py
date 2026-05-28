@@ -5,6 +5,7 @@ import re
 import gzip
 import sys
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from typing import Optional
 
 import rich_click as click
@@ -19,7 +20,10 @@ from .io import gc_cmd_view, merge_indel_breakpoints, parseNum, write_vcf
 from .ensemble import insilico_truth, double_strand_break
 from .union import union_sv, advunion_sv, union_sv_with_tr
 
-__version__ = "0.1.2"
+try:
+    __version__ = version("minisv")
+except PackageNotFoundError:
+    __version__ = "0.1.3"
 
 
 @dataclass
@@ -559,6 +563,25 @@ def filterasm(
         svid=svid
     )
     othercaller_filterasm(vcffile, options, readidtsv, msvasm, outstat, consensusid)
+
+
+@cli.command()
+@click.option("-F", "--ignoreflt", is_flag=True, help="ignore VCF filter")
+@click.option("--both", is_flag=True, help="drop only if both breakpoints overlap")
+@click.option("--pad", required=False, default=0, type=int, help="expand BED regions by INT bp")
+@click.argument("gnomad_bed", type=str, nargs=1)
+@click.argument("vcffile", type=str, nargs=1)
+def gnomadfilter(
+    ignoreflt,
+    both,
+    pad,
+    gnomad_bed,
+    vcffile,
+):
+    """Drop caller VCF calls whose breakpoint overlaps a gnomAD-SV BED region"""
+    from .filtercaller import gnomad_filter
+    options = EvalOpt(ignore_flt=ignoreflt)
+    gnomad_filter(vcffile, gnomad_bed, options, both_ends=both, pad=pad)
 
 
 @cli.command()
