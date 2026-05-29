@@ -5,6 +5,11 @@ from .regex import re_info
 
 def insilico_truth(msv_union, file_handler=None):
 
+    def _emit(res_list, file_ids):
+        sorted_lines = sorted(res_list, key=lambda x: (int(x[1]), int(x[4])))
+        med_line = '\t'.join(map(str, sorted_lines[len(sorted_lines) >> 1]))
+        print(med_line + '\t' + ','.join(file_ids), file=file_handler)
+
     group_ids = []
     file_ids = []
     res_list = []
@@ -31,10 +36,8 @@ def insilico_truth(msv_union, file_handler=None):
                     res_list.append(elements)
                     file_ids.append(file_id)
                 else:
-                    # output
-                    sorted_lines = sorted(res_list, key=lambda x: (int(x[1]), int(x[4])))
-                    med_line = '\t'.join(map(str, sorted_lines[len(sorted_lines) >> 1]))
-                    print(med_line + '\t' + ','.join(file_ids), file=file_handler)
+                    # output the completed group
+                    _emit(res_list, file_ids)
                     group_ids.append(group_id)
                     file_ids = [file_id]
                     res_list = [elements]
@@ -42,6 +45,11 @@ def insilico_truth(msv_union, file_handler=None):
                 file_ids.append(file_id)
                 group_ids.append(group_id)
                 res_list.append(elements)
+
+    # flush the final group: the loop only emits on a group_id transition,
+    # so the last accumulated group is otherwise never output.
+    if res_list:
+        _emit(res_list, file_ids)
 
 
 def double_strand_break(collapsed_msv_union):
