@@ -85,6 +85,7 @@ class EvalOpt:
     merge: bool = False
     svid: str = ""
     only_readname: bool = False
+    gnomad_af: float = 0.01   # AF cutoff for gc_read_bed(is_gnomad=True)
 
 
 @click.group(help="minisv tool commands")
@@ -598,6 +599,8 @@ def filterasm(
 @click.option("-a", is_flag=True, help="print all")
 @click.option("--both", is_flag=True, help="drop only if both breakpoints overlap")
 @click.option("--pad", required=False, default=0, type=int, help="expand BED regions by INT bp")
+@click.option("--gnomadaf", required=False, default=0.01, type=float,
+              help="keep gnomAD-SV rows with AF >= FLOAT (default 0.01)")
 @click.argument("gnomad_bed", type=str, nargs=1)
 @click.argument("vcffile", type=str, nargs=1)
 def gnomadfilter(
@@ -617,6 +620,7 @@ def gnomadfilter(
     ignoreflt,
     both,
     pad,
+    gnomadaf,
     gnomad_bed,
     vcffile,
 ):
@@ -637,7 +641,8 @@ def gnomadfilter(
         check_gt=gt,
         merge=False,
         ignore_flt=ignoreflt,
-        svid=svid
+        svid=svid,
+        gnomad_af=gnomadaf,
     )
     gnomad_filter(vcffile, gnomad_bed, options, both_ends=both, pad=pad)
 

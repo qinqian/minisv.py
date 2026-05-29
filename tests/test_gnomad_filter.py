@@ -2,7 +2,7 @@
 import io
 from types import SimpleNamespace
 
-from minisv.eval import iit_index, iit_overlap, iit_sort_copy
+from minisv.eval import gc_read_bed, iit_index, iit_overlap, iit_sort_copy
 from minisv.filtercaller import gnomad_filter
 
 
@@ -46,19 +46,37 @@ VCF_LINES = [
     "chr1\t5000\tdel_out\tATCGATCGAT\tA\t60\tPASS\tSVTYPE=DEL;SVLEN=-9",
 ]
 
-
+# gnomAD-shaped BED rows have 49 columns; CHR2==chrom routes to bed_pt (same-chrom).
 def write_files(tmp_path, bed_regions):
     vcf = tmp_path / "calls.vcf"
     vcf.write_text("\n".join(VCF_LINES) + "\n")
     bed = tmp_path / "gnomad.bed"
-    bed.write_text("".join(f"{c}\t{s}\t{e}\n" for c, s, e in bed_regions))
+    lines = []
+    for c, s, e in bed_regions:
+        cols = ["NA"] * 49
+        cols[0] = c
+        cols[1] = str(s)
+        cols[2] = str(e)
+        cols[4] = "DEL"
+        cols[9] = c        # CHR2 == chrom -> same-chrom -> bed_pt
+        cols[48] = "0.5"   # AF above default threshold
+        lines.append("\t".join(cols))
+    bed.write_text("\n".join(lines) + "\n")
     return str(vcf), str(bed)
+
+
+_OPT = SimpleNamespace(
+    ignore_flt=True, min_len=0, min_count=0, min_vaf=0,
+    read_len_ratio=0.8, win_size=500, min_len_ratio=0.6,
+    dbg=False, print_err=False, print_all=False,
+    bed=None, gnomad_af=0.01, check_gt=False,
+)
 
 
 def run_filter(tmp_path, bed_regions, **kw):
     vcf, bed = write_files(tmp_path, bed_regions)
     out = io.StringIO()
-    gnomad_filter(vcf, bed, SimpleNamespace(ignore_flt=True), out=out, **kw)
+    gnomad_filter(vcf, bed, _OPT, out=out, **kw)
     return out.getvalue()
 
 
@@ -88,3 +106,156 @@ def test_gnomad_filter_pad(tmp_path):
 
     padded = run_filter(tmp_path, [("chr1", 5015, 5025)], pad=20)
     assert "del_out" not in padded  # pad expands the query to reach 5009
+
+
+# ---------------------------------------------------------------------------
+# Helper for gnomAD-shaped BED (49 cols, cross-chrom or same-chrom rows)
+# ---------------------------------------------------------------------------
+
+def _make_gnomad_bed(tmp_path, rows):
+    """Write a minimal gnomAD-shaped BED (49 cols). rows = list of dicts."""
+    lines = []
+    for r in rows:
+        cols = ["NA"] * 49
+        cols[0]  = r["chrom"]
+        cols[1]  = str(r["start"])
+        cols[2]  = str(r["end"])
+        cols[3]  = r.get("name", "gnomAD_test")
+        cols[4]  = r.get("svtype", "BND")
+        cols[9]  = r.get("chr2", "NA")
+        cols[13] = str(r["end2"]) if "end2" in r else "NA"
+        cols[48] = str(r.get("af", 0.5))
+        lines.append("\t".join(cols))
+    p = tmp_path / "gnomad.bed"
+    p.write_text("\n".join(lines) + "\n")
+    return str(p)
+
+
+# ---------------------------------------------------------------------------
+# gc_read_bed unit tests (Task 2)
+# ---------------------------------------------------------------------------
+
+def test_gc_read_bed_gnomad_same_chrom_goes_to_pt(tmp_path):
+    """Same-chrom rows land in bed_pt; bed_sv is empty."""
+    bed = _make_gnomad_bed(tmp_path, [
+        {"chrom": "chr1", "start": 1000, "end": 2000, "svtype": "DEL",
+         "chr2": "chr1", "af": 0.5},
+    ])
+    h_pt, h_sv = gc_read_bed(bed, is_gnomad=True)
+    assert "chr1" in h_pt
+    assert "chr1" not in h_sv
+
+
+def test_gc_read_bed_gnomad_cross_chrom_goes_to_sv(tmp_path):
+    """Cross-chrom rows land in bed_sv on BOTH contigs; bed_pt is empty."""
+    bed = _make_gnomad_bed(tmp_path, [
+        {"chrom": "chr1", "start": 1000, "end": 1001, "svtype": "BND",
+         "chr2": "chr2", "end2": 2000, "af": 0.5},
+    ])
+    h_pt, h_sv = gc_read_bed(bed, is_gnomad=True)
+    assert "chr1" not in h_pt
+    assert "chr1" in h_sv
+    assert "chr2" in h_sv
+    node = h_sv["chr1"][0]
+    assert node.data.ctg2 == "chr2"
+    assert node.data.pos2 == 2000
+
+
+def test_gc_read_bed_gnomad_af_filter(tmp_path):
+    """Row with AF < gnomad_af is skipped; row above threshold is kept."""
+    bed = _make_gnomad_bed(tmp_path, [
+        {"chrom": "chr1", "start": 1000, "end": 2000, "svtype": "DEL",
+         "chr2": "chr1", "af": 0.005},
+    ])
+    h_pt, h_sv = gc_read_bed(bed, is_gnomad=True, gnomad_af=0.01)
+    assert "chr1" not in h_pt  # filtered out
+
+    h_pt2, _ = gc_read_bed(bed, is_gnomad=True, gnomad_af=0.001)
+    assert "chr1" in h_pt2    # passes lower threshold
+
+
+def test_gc_read_bed_non_gnomad_unchanged(tmp_path):
+    """Non-gnomAD call (is_gnomad=False) returns a single dict, not a tuple."""
+    p = tmp_path / "plain.bed"
+    p.write_text("chr1\t100\t200\n")
+    result = gc_read_bed(str(p))
+    assert isinstance(result, dict)
+    assert "chr1" in result
+
+
+# ---------------------------------------------------------------------------
+# gnomad_filter integration tests (Task 3)
+# ---------------------------------------------------------------------------
+
+VCF_BND = [
+    "##fileformat=VCFv4.2",
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+    # BND chr1:1000 -> chr2:2000
+    "chr1\t1001\tbnd_match\tN\tN[chr2:2000[\t60\tPASS\tSVTYPE=BND;SVLEN=0",
+    # BND chr2:2000 -> chr3:7000  (mate-mismatch case)
+    "chr2\t2001\tbnd_mismatch\tN\tN[chr3:7000[\t60\tPASS\tSVTYPE=BND;SVLEN=0",
+]
+
+
+def _run_filter_gnomad(tmp_path, gnomad_rows, vcf_lines, gnomad_af=0.01, **kw):
+    vcf = tmp_path / "calls.vcf"
+    vcf.write_text("\n".join(vcf_lines) + "\n")
+    bed = _make_gnomad_bed(tmp_path, gnomad_rows)
+    out = io.StringIO()
+    opt = SimpleNamespace(
+        ignore_flt=True, min_len=0, min_count=0, min_vaf=0,
+        read_len_ratio=0.8, win_size=500, min_len_ratio=0.6,
+        dbg=False, print_err=False, print_all=False,
+        bed=None, gnomad_af=gnomad_af, check_gt=False,
+    )
+    gnomad_filter(str(vcf), bed, opt, out=out, **kw)
+    return out.getvalue()
+
+
+def test_cross_chrom_sv_match_drops(tmp_path):
+    """Caller BND chr1:1000<->chr2:2000 matches gnomAD row -> dropped."""
+    out = _run_filter_gnomad(tmp_path, [
+        {"chrom": "chr1", "start": 1000, "end": 1001,
+         "svtype": "BND", "chr2": "chr2", "end2": 2000, "af": 0.5},
+    ], VCF_BND)
+    assert "bnd_match" not in out
+
+
+def test_cross_chrom_mate_mismatch_kept(tmp_path):
+    """
+    Caller BND chr2:2000<->chr3:7000 — no single gnomAD record connects
+    those two contigs. Must NOT be dropped.
+    gnomAD has chr1:1000<->chr2:2000 and chr1:5000<->chr3:7000.
+    """
+    out = _run_filter_gnomad(tmp_path, [
+        {"chrom": "chr1", "start": 1000, "end": 1001,
+         "svtype": "BND", "chr2": "chr2", "end2": 2000, "af": 0.5},
+        {"chrom": "chr1", "start": 5000, "end": 5001,
+         "svtype": "BND", "chr2": "chr3", "end2": 7000, "af": 0.5},
+    ], VCF_BND)
+    assert "bnd_mismatch" in out
+
+
+def test_same_chrom_point_overlap_unchanged(tmp_path):
+    """Same-chrom DEL still dropped by point-overlap path (existing behavior)."""
+    out = _run_filter_gnomad(tmp_path, [
+        {"chrom": "chr1", "start": 990, "end": 1010,
+         "svtype": "DEL", "chr2": "chr1", "af": 0.5},
+    ], VCF_LINES)
+    assert "del_in" not in out
+    assert "del_out" in out
+
+
+def test_gnomadaf_flag_cross_chrom(tmp_path):
+    """Cross-chrom row at AF=0.005 ignored by default; dropped at gnomad_af=0.001."""
+    gnomad_rows = [
+        {"chrom": "chr1", "start": 1000, "end": 1001,
+         "svtype": "BND", "chr2": "chr2", "end2": 2000, "af": 0.005},
+    ]
+    out_default = _run_filter_gnomad(tmp_path, gnomad_rows, VCF_BND)
+    assert "bnd_match" in out_default  # AF too low -> row not indexed -> not dropped
+
+    tmp2 = tmp_path / "sub2"
+    tmp2.mkdir()
+    out_low = _run_filter_gnomad(tmp2, gnomad_rows, VCF_BND, gnomad_af=0.001)
+    assert "bnd_match" not in out_low  # gnomad_af=0.001 -> row included -> dropped

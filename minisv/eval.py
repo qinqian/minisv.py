@@ -877,33 +877,77 @@ def gc_cmp_same_sv1(win_size, min_len_ratio, b, t):
         return (match1 & 1) != 0 and (match2 & 2) != 0
 
 
-def gc_read_bed(fn, is_gnomad=False):
+def gc_read_bed(fn, is_gnomad=False, gnomad_af=0.01):
     if is_gzipped(fn):
         f = gzip.open(fn, 'rt')
     else:
         f = open(fn)
 
-    h = {}
-    for line in f:
-        t = line.strip().split("\t")
-        if t[0].startswith("#"): continue
+    if is_gnomad:
+        h_pt, h_sv = {}, {}
+        n_skip = 0
+        for line in f:
+            t = line.strip().split("\t")
+            if t[0].startswith("#"):
+                continue
+            if len(t) < 49:
+                n_skip += 1
+                continue
+            af = 0 if t[48].strip() == 'NA' else float(t[48])
+            if af < gnomad_af:
+                continue
+            svtype = t[4]
+            ctg2_raw = t[9]
+            if ctg2_raw != 'NA' and ctg2_raw != t[0]:
+                # cross-chrom: index on both ends for SV-identity matching.
+                # SVLEN=0: cross-chrom rows are matched as BND regardless of SVTYPE
+                # so gc_cmp_same_sv1 skips the length check (eval.py:834).
+                if t[13] == 'NA':
+                    continue
+                pos2 = int(t[13])
+                s = svinfo(
+                    ctg=t[0], pos=int(t[1]),
+                    ctg2=ctg2_raw, pos2=pos2,
+                    ori=">>",
+                    SVTYPE=svtype,
+                    SVLEN=0,
+                    inv=(svtype == 'INV'),
+                    count=0, vaf=1,
+                    svid=t[3],
+                )
+                h_sv.setdefault(t[0], []).append(
+                    {"st": int(t[1]), "en": int(t[1]) + 1, "data": s})
+                h_sv.setdefault(ctg2_raw, []).append(
+                    {"st": pos2, "en": pos2 + 1, "data": s})
+            else:
+                # same-chrom (or CHR2 == NA): point-overlap tree (current behavior)
+                h_pt.setdefault(t[0], []).append(
+                    {"st": int(t[1]), "en": int(t[2]), "data": None})
+        f.close()
+        if n_skip:
+            import sys as _sys
 
-        if len(t) < 3:
-            continue
-        if t[0] not in h:
-            h[t[0]] = []
-
-        if not is_gnomad:
-           h[t[0]].append({"st": int(t[1]), "en": int(t[2]), "data": None})
-        else:
-           # store AF
-           af = 0 if t[48].strip() == 'NA' else float(t[48])
-           if is_gnomad and af >= 0.01:
-               h[t[0]].append({"st": int(t[1]), "en": int(t[2]), "data": None})
-
-    for ctg in h:
-        h[ctg] = iit_sort_copy(h[ctg])
-        iit_index(h[ctg])
-
-    f.close()
-    return h
+            print(
+                f"[gc_read_bed] WARNING: {n_skip} gnomAD row(s) skipped — fewer than 49 columns",
+                file=_sys.stderr,
+            )
+        for tree in (h_pt, h_sv):
+            for ctg in tree:
+                tree[ctg] = iit_sort_copy(tree[ctg])
+                iit_index(tree[ctg])
+        return h_pt, h_sv
+    else:
+        h = {}
+        for line in f:
+            t = line.strip().split("\t")
+            if t[0].startswith("#"):
+                continue
+            if len(t) < 3:
+                continue
+            h.setdefault(t[0], []).append(
+                {"st": int(t[1]), "en": int(t[2]), "data": None})
+        f.close()
+        for ctg in h:
+            h[ctg] = iit_sort_copy(h[ctg])
+            iit_index(h[ctg])
+        return h

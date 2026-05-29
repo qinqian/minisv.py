@@ -178,41 +178,32 @@ def parse_svid(svid):
         #raise Exception("not support yet")
 
 def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
-    """Drop caller VCF calls whose breakpoint overlaps a gnomAD-SV BED region.
+    """Drop caller VCF calls that overlap a gnomAD-SV record.
 
-    Type-agnostic breakpoint overlap (no allele-frequency parsing). By default a
-    call is dropped if *either* breakpoint overlaps the BED; both_ends=True
-    requires both. The original VCF is re-emitted to ``out`` minus the dropped
-    calls; lines that gc_parse_sv never parses pass through unchanged.
+    Cross-chrom gnomAD rows (CHR2 != chrom): matched via eval1/gc_cmp_same_sv1
+    (requires both endpoints of the gnomAD record to match the caller).
+    Same-chrom rows: matched by point-in-interval (existing behavior).
+    A caller call is dropped if either path fires.
     """
     if out is None:
         out = sys.stdout
 
-    bed = gc_read_bed(gnomad_bed, is_gnomad=True)
-    # parse permissively (min_len=0, min_count=0) so gnomAD overlap is the only filter
-    # svs = gc_parse_sv(vcf_file, 0, 0, opt.ignore_flt, False)
-
+    bed_pt, bed_sv = gc_read_bed(gnomad_bed, is_gnomad=True,
+                                  gnomad_af=opt.gnomad_af)
     min_read_len = math.floor(opt.min_len * opt.read_len_ratio + 0.499)
     svs = gc_parse_sv(vcf_file, min_read_len, opt.min_count, opt.ignore_flt, opt.check_gt)
 
     drop = set()
     included = set()
     for t in svs:
-        # Not long enough for non-BND type
-        # NOTE: here use 100bp as the default length instead of 80
         if t.SVTYPE != "BND" and abs(t.SVLEN) < opt.min_len:
             continue
-
         if t.SVTYPE == "BND" and t.ctg == t.ctg2 and abs(t.SVLEN) < opt.min_len:
             continue
-
         if t.count > 0 and t.count < opt.min_count:
             continue
-
-        # filter by VAF
         if t.vaf is not None and t.vaf < opt.min_vaf:
             continue
-
         if opt.bed is not None:
             if t.ctg not in opt.bed or t.ctg2 not in opt.bed:
                 continue
@@ -221,12 +212,25 @@ def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
             if len(iit_overlap(opt.bed[t.ctg2], t.pos2, t.pos2 + 1)) == 0:
                 continue
 
-        # all svs passed QC
         included.add(parse_svid(t.svid))
-        hit1 = t.ctg in bed and len(iit_overlap(bed[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0
-        hit2 = t.ctg2 in bed and len(iit_overlap(bed[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0
-        if (hit1 and hit2) if both_ends else (hit1 or hit2):
-           # gnomad filtered svs
+
+        # Path 1: SV-identity match against cross-chrom gnomAD records.
+        # eval1 calls gc_cmp_same_sv1 which for BND requires both gnomAD
+        # endpoints to match the caller (eval.py:872-875).
+        n_sv = (
+            (eval1(opt, bed_sv, t.ctg, t.pos, t) > 0 if t.ctg in bed_sv else False)
+            or
+            (eval1(opt, bed_sv, t.ctg2, t.pos2, t) > 0 if t.ctg2 in bed_sv else False)
+        )
+
+        # Path 2: point-in-interval against same-chrom gnomAD records.
+        hit1 = (t.ctg in bed_pt and
+                len(iit_overlap(bed_pt[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0)
+        hit2 = (t.ctg2 in bed_pt and
+                len(iit_overlap(bed_pt[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0)
+        hit_pt = (hit1 and hit2) if both_ends else (hit1 or hit2)
+
+        if n_sv or hit_pt:
             drop.add(parse_svid(t.svid))
 
     if is_gzipped(vcf_file):
