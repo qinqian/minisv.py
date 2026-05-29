@@ -64,6 +64,7 @@ matched normal.
   - [Large somatic SVs in tumor-only samples](#call-tonly)
   - [Mosaic SVs](#call-mosaic)
 - [Generic filtering for other caller](#filter)
+- [gnomAD-SV population filtering](#gnomadfilter)
 - [Trio filtering for sniffles2](#trio_filtering)
 - [Ensembling filtered caller results](#ensemble)
 - [Comparing SVs](#compare)
@@ -263,6 +264,38 @@ minisv filterasm -c 5 -a -b minisv.py/data/hs38.reg.bed minisv/COLO829_hifi1T.hg
 ```
 
 
+## <a name="gnomadfilter"></a>gnomAD-SV population filtering
+
+`gnomadfilter` drops a caller's calls that fall on common population SVs, using
+the [gnomAD-SV][gnomad-sv] sites as a BED file. It is caller-agnostic (any VCF
+minisv can parse) and is a standalone step, not wired into the orchestrators.
+
+```sh
+minisv gnomadfilter gnomad.v4.1.sv.sites.bed severus_somatic.vcf > severus_nognomad.vcf
+```
+
+Matching depends on the gnomAD record:
+
+- **Same-chromosome** records are matched by breakpoint overlap (type-agnostic).
+  By default a call is dropped if *either* breakpoint overlaps; `--both` requires
+  both ends, and `--pad INT` expands each gnomAD region by `INT` bp.
+- **Cross-chromosome** records are matched against the full two-breakpoint
+  identity of the gnomAD record (both ends must match), so two unrelated gnomAD
+  records cannot combine to drop a real translocation.
+
+`--gnomadaf FLOAT` sets the allele-frequency cutoff: only gnomAD-SV rows with
+`AF >= FLOAT` are used as the filter (default `0.01`). Raise it to filter only
+against more common SVs, lower it to filter more aggressively.
+
+```sh
+# only filter against gnomAD SVs with AF >= 5%
+minisv gnomadfilter --gnomadaf 0.05 gnomad.v4.1.sv.sites.bed severus_somatic.vcf > severus_nognomad.vcf
+```
+
+The gnomAD-SV sites BED is expected in the v4.1 column layout (svtype at col 5,
+`CHR2`/`END2` at cols 10/14, `AF` at col 49, 1-based); rows with fewer than 49
+columns are skipped with a warning.
+
 ## <a name="ensemble"></a>Ensembling filtered caller results
 
 The ensemble depends on the `union` function from minisv.js. TODO: add union in minsv.py. This function takes the filtered SV call sets from each caller after denovo assembly-based filtering, then ensemble the SV sets into a in silico truth set. `ensembleunion` collapsed the truth set by selecting one SV per group in the `union` output.
@@ -449,3 +482,4 @@ minisv sv-trio-filter --mm2 minimap2 --mg minigraph --vcf test.vcf --readid_tsv 
 [mg]: https://github.com/lh3/minigraph
 [mm2]: https://github.com/lh3/minimap2
 [hifiasm]: https://github.com/chhylp123/hifiasm
+[gnomad-sv]: https://gnomad.broadinstitute.org/downloads#v4-structural-variants
