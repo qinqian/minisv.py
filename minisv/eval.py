@@ -712,7 +712,6 @@ class iit_obj:
 # interval query
 def iit_sort_copy(a):
     """Sort a list of SVs by start position and return a copy
-    NOTE: what is iit sort? is it insertion sort?
     """
     a.sort(key=lambda x: x["st"])
     b = []
@@ -878,18 +877,33 @@ def gc_cmp_same_sv1(win_size, min_len_ratio, b, t):
         return (match1 & 1) != 0 and (match2 & 2) != 0
 
 
-def gc_read_bed(fn):
+def gc_read_bed(fn, is_gnomad=False):
+    if is_gzipped(fn):
+        f = gzip.open(fn, 'rt')
+    else:
+        f = open(fn)
+
     h = {}
-    with open(fn) as fin_handler:
-        for line in fin_handler:
-            t = line.strip().split("\t")
-            if len(t) < 3:
-                continue
-            if t[0] not in h:
-                h[t[0]] = []
-            h[t[0]].append({"st": int(t[1]), "en": int(t[2]), "data": None})
+    for line in f:
+        t = line.strip().split("\t")
+        if t[0].startswith("#"): continue
+
+        if len(t) < 3:
+            continue
+        if t[0] not in h:
+            h[t[0]] = []
+
+        if not is_gnomad:
+           h[t[0]].append({"st": int(t[1]), "en": int(t[2]), "data": None})
+        else:
+           # store AF
+           af = 0 if t[48].strip() == 'NA' else float(t[48])
+           if is_gnomad and af >= 0.01:
+               h[t[0]].append({"st": int(t[1]), "en": int(t[2]), "data": None})
 
     for ctg in h:
         h[ctg] = iit_sort_copy(h[ctg])
         iit_index(h[ctg])
+
+    f.close()
     return h

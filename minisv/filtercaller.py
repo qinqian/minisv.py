@@ -188,29 +188,65 @@ def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
     if out is None:
         out = sys.stdout
 
-    bed = gc_read_bed(gnomad_bed)
+    bed = gc_read_bed(gnomad_bed, is_gnomad=True)
     # parse permissively (min_len=0, min_count=0) so gnomAD overlap is the only filter
-    svs = gc_parse_sv(vcf_file, 0, 0, opt.ignore_flt, False)
+    # svs = gc_parse_sv(vcf_file, 0, 0, opt.ignore_flt, False)
+
+    min_read_len = math.floor(opt.min_len * opt.read_len_ratio + 0.499)
+    svs = gc_parse_sv(vcf_file, min_read_len, opt.min_count, opt.ignore_flt, opt.check_gt)
 
     drop = set()
+    included = set()
     for t in svs:
+        # Not long enough for non-BND type
+        # NOTE: here use 100bp as the default length instead of 80
+        if t.SVTYPE != "BND" and abs(t.SVLEN) < opt.min_len:
+            continue
+
+        if t.SVTYPE == "BND" and t.ctg == t.ctg2 and abs(t.SVLEN) < opt.min_len:
+            continue
+
+        if t.count > 0 and t.count < opt.min_count:
+            continue
+
+        # filter by VAF
+        if t.vaf is not None and t.vaf < opt.min_vaf:
+            continue
+
+        if opt.bed is not None:
+            if t.ctg not in opt.bed or t.ctg2 not in opt.bed:
+                continue
+            if len(iit_overlap(opt.bed[t.ctg], t.pos, t.pos + 1)) == 0:
+                continue
+            if len(iit_overlap(opt.bed[t.ctg2], t.pos2, t.pos2 + 1)) == 0:
+                continue
+
+        # all svs passed QC
+        included.add(parse_svid(t.svid))
         hit1 = t.ctg in bed and len(iit_overlap(bed[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0
         hit2 = t.ctg2 in bed and len(iit_overlap(bed[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0
         if (hit1 and hit2) if both_ends else (hit1 or hit2):
+           # gnomad filtered svs
             drop.add(parse_svid(t.svid))
 
     if is_gzipped(vcf_file):
         f = gzip.open(vcf_file, 'rt')
     else:
         f = open(vcf_file)
+
+    n = 0
     for line in f:
         if line[0] == "#":
             print(line.strip(), file=out)
             continue
         t = line.strip().split("\t")
         if len(t) >= 3 and parse_svid(t[2]) in drop:
+            n += 1
             continue
-        print(line.strip(), file=out)
+        if parse_svid(t[2]) in included:
+            print(line.strip(), file=out)
+
+    print(len(included), len(drop), file=sys.stderr)
     f.close()
 
 

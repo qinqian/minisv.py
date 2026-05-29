@@ -566,12 +566,54 @@ def filterasm(
 
 
 @cli.command()
+@click.option("-d", is_flag=True, help="verbose option for debug")
+@click.option("-b", type=click.Path(exists=True), help="bed to restrict the comparison")
+@click.option(
+    "-l", "--svlen", required=False, default="100", type=str, help="minimum sv length"
+)
+@click.option("-c", required=False, default=0, type=int, help="minimum sv counts")
+@click.option("-w", required=False, default="500", type=str, help="window size")
+@click.option(
+    "-r",
+    required=False,
+    default=0.8,  # NOTE: in js this might be a bug, these ratio name looks confusing
+    type=float,
+    help="read SVs longer than svlen*FLOAT",
+)
+@click.option(
+    "-m",
+    required=False,
+    default=0.6,
+    type=float,
+    help="minimum length ratio similarity between read SV and truthset SV",
+)
+@click.option(
+    "-v", required=False, default=0, type=float, help="ignore VAF below FLOAT"
+)
 @click.option("-F", "--ignoreflt", is_flag=True, help="ignore VCF filter")
+@click.option("-i", "--consensusid", required=False, type=str, default="", help="consensus id file")
+@click.option("-s", "--svid", required=False, type=str, default="", help="debug one svid")
+@click.option("-G", "--gt", is_flag=True, help="check GT")
+@click.option("-e", is_flag=True, help="print errors")
+@click.option("-a", is_flag=True, help="print all")
 @click.option("--both", is_flag=True, help="drop only if both breakpoints overlap")
 @click.option("--pad", required=False, default=0, type=int, help="expand BED regions by INT bp")
 @click.argument("gnomad_bed", type=str, nargs=1)
 @click.argument("vcffile", type=str, nargs=1)
 def gnomadfilter(
+    w: str,
+    svlen: str,
+    c: int,
+    r: float,
+    m: float,
+    d: bool,
+    e: bool,
+    a: bool,
+    v: float,
+    consensusid: str,
+    svid: str,
+    b,
+    gt,
     ignoreflt,
     both,
     pad,
@@ -580,7 +622,23 @@ def gnomadfilter(
 ):
     """Drop caller VCF calls whose breakpoint overlaps a gnomAD-SV BED region"""
     from .filtercaller import gnomad_filter
-    options = EvalOpt(ignore_flt=ignoreflt)
+    options = EvalOpt(
+        only_readname=False,
+        min_len=parseNum(svlen),
+        min_count=int(c),
+        win_size=parseNum(w),
+        read_len_ratio=r,
+        min_len_ratio=m,  # NOTE: the option are not input
+        dbg=d,
+        bed=gc_read_bed(b) if b is not None else None,
+        print_err=e,
+        print_all=a,
+        min_vaf=v,
+        check_gt=gt,
+        merge=False,
+        ignore_flt=ignoreflt,
+        svid=svid
+    )
     gnomad_filter(vcffile, gnomad_bed, options, both_ends=both, pad=pad)
 
 
