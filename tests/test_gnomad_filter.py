@@ -2,6 +2,8 @@
 import io
 from types import SimpleNamespace
 
+import pytest
+
 from minisv.eval import gc_read_bed, iit_index, iit_overlap, iit_sort_copy
 from minisv.filtercaller import gnomad_filter
 
@@ -59,6 +61,7 @@ def write_files(tmp_path, bed_regions):
         cols[2] = str(e)
         cols[4] = "DEL"
         cols[9] = c        # CHR2 == chrom -> same-chrom -> bed_pt
+        cols[43] = "9"
         cols[48] = "0.5"   # AF above default threshold
         lines.append("\t".join(cols))
     bed.write_text("\n".join(lines) + "\n")
@@ -124,6 +127,7 @@ def _make_gnomad_bed(tmp_path, rows):
         cols[4]  = r.get("svtype", "BND")
         cols[9]  = r.get("chr2", "NA")
         cols[13] = str(r["end2"]) if "end2" in r else "NA"
+        cols[43] = str(r.get("svlen", "NA"))
         cols[48] = str(r.get("af", 0.5))
         lines.append("\t".join(cols))
     p = tmp_path / "gnomad.bed"
@@ -172,6 +176,16 @@ def test_gc_read_bed_gnomad_af_filter(tmp_path):
 
     h_pt2, _ = gc_read_bed(bed, is_gnomad=True, gnomad_af=0.001)
     assert "chr1" in h_pt2    # passes lower threshold
+
+
+@pytest.mark.parametrize("raw_svlen", ["NA", "", "-1"])
+def test_gc_read_bed_gnomad_missing_svlen_is_zero(tmp_path, raw_svlen):
+    bed = _make_gnomad_bed(tmp_path, [
+        {"chrom": "chr1", "start": 1000, "end": 2000, "svtype": "DUP",
+         "chr2": "chr1", "svlen": raw_svlen, "af": 0.5},
+    ])
+    h_pt, _ = gc_read_bed(bed, is_gnomad=True)
+    assert h_pt["chr1"][0].data.SVLEN == 0
 
 
 def test_gc_read_bed_non_gnomad_unchanged(tmp_path):
@@ -236,13 +250,43 @@ def test_cross_chrom_mate_mismatch_kept(tmp_path):
     assert "bnd_mismatch" in out
 
 
-def test_same_chrom_point_overlap_unchanged(tmp_path):
-    """Same-chrom DEL still dropped by point-overlap path (existing behavior)."""
+def test_same_chrom_same_type_similar_length_drops(tmp_path):
+    """Same-chrom DEL with matching type and similar length is dropped."""
     out = _run_filter_gnomad(tmp_path, [
         {"chrom": "chr1", "start": 990, "end": 1010,
-         "svtype": "DEL", "chr2": "chr1", "af": 0.5},
+         "svtype": "DEL", "svlen": 9, "chr2": "chr1", "af": 0.5},
     ], VCF_LINES)
     assert "del_in" not in out
+    assert "del_out" in out
+
+
+def test_same_chrom_different_type_kept(tmp_path):
+    """Same-chrom overlap with a different SVTYPE is kept."""
+    out = _run_filter_gnomad(tmp_path, [
+        {"chrom": "chr1", "start": 990, "end": 1010,
+         "svtype": "DUP", "svlen": 9, "chr2": "chr1", "af": 0.5},
+    ], VCF_LINES)
+    assert "del_in" in out
+    assert "del_out" in out
+
+
+def test_same_chrom_bnd_does_not_match_del(tmp_path):
+    """Same-chrom BND does not act as a wildcard for non-BND calls."""
+    out = _run_filter_gnomad(tmp_path, [
+        {"chrom": "chr1", "start": 990, "end": 1010,
+         "svtype": "BND", "svlen": "NA", "chr2": "chr1", "af": 0.5},
+    ], VCF_LINES)
+    assert "del_in" in out
+    assert "del_out" in out
+
+
+def test_same_chrom_same_type_different_length_kept(tmp_path):
+    """Same-chrom overlap with incompatible SVLEN is kept."""
+    out = _run_filter_gnomad(tmp_path, [
+        {"chrom": "chr1", "start": 990, "end": 1010,
+         "svtype": "DEL", "svlen": 5000, "chr2": "chr1", "af": 0.5},
+    ], VCF_LINES)
+    assert "del_in" in out
     assert "del_out" in out
 
 
