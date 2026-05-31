@@ -177,12 +177,44 @@ def parse_svid(svid):
     return query_svid
         #raise Exception("not support yet")
 
+
+def _gnomad_same_type_and_length(b, t, min_len_ratio):
+    if b.SVTYPE == "BND" or t.SVTYPE == "BND":
+        return b.SVTYPE == t.SVTYPE
+
+    if b.SVTYPE != t.SVTYPE:
+        if (
+            (not (b.SVTYPE == "DUP" and t.SVTYPE == "INS"))
+            and (not (b.SVTYPE == "INS" and t.SVTYPE == "DUP"))
+        ):
+            return False
+
+    b_len = abs(b.SVLEN or 0)
+    t_len = abs(t.SVLEN or 0)
+    len_check = (abs(b_len - t_len) <= 1000) or (
+        b_len >= t_len * min_len_ratio
+        and t_len >= b_len * min_len_ratio
+    )
+    if not len_check:
+        return False
+    return True
+
+
+def _gnomad_same_chrom_hit(opt, bed_pt, ctg, pos, t, pad):
+    if ctg not in bed_pt:
+        return False
+    for hit in iit_overlap(bed_pt[ctg], pos - pad, pos + 1 + pad):
+        if _gnomad_same_type_and_length(hit.data, t, opt.min_len_ratio):
+            return True
+    return False
+
+
 def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
     """Drop caller VCF calls that overlap a gnomAD-SV record.
 
     Cross-chrom gnomAD rows (CHR2 != chrom): matched via eval1/gc_cmp_same_sv1
     (requires both endpoints of the gnomAD record to match the caller).
-    Same-chrom rows: matched by point-in-interval (existing behavior).
+    Same-chrom rows: matched by endpoint overlap, plus compatible SVTYPE/SVLEN.
     A caller call is dropped if either path fires.
     """
     if out is None:
@@ -223,19 +255,8 @@ def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
             (eval1(opt, bed_sv, t.ctg2, t.pos2, t) > 0 if t.ctg2 in bed_sv else False)
         )
 
-        # type agnostic Path 2 is not necessary any more.
-        ## Path 2: point-in-interval against same-chrom gnomAD records.
-        #hit1 = (t.ctg in bed_pt and
-        #        len(iit_overlap(bed_pt[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0)
-        #hit2 = (t.ctg2 in bed_pt and
-        #        len(iit_overlap(bed_pt[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0)
-        #hit_pt = (hit1 and hit2) if both_ends else (hit1 or hit2)
-
-        # type specific Path 2
-        hit1 = (t.ctg in bed_pt and
-                eval1(opt, bed_pt, t.ctg, t.pos, t) > 0)
-        hit2 = (t.ctg2 in bed_pt and
-                eval1(opt, bed_pt, t.ctg2, t.pos2, t) > 0)
+        hit1 = _gnomad_same_chrom_hit(opt, bed_pt, t.ctg, t.pos, t, pad)
+        hit2 = _gnomad_same_chrom_hit(opt, bed_pt, t.ctg2, t.pos2, t, pad)
         hit_pt = (hit1 and hit2) if both_ends else (hit1 or hit2)
 
         if n_sv or hit_pt:

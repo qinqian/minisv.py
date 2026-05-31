@@ -897,9 +897,8 @@ def gc_read_bed(fn, is_gnomad=False, gnomad_af=0.01):
             if af < gnomad_af:
                 continue
             svtype = t[4]
-            svlen = int(t[43])
-            if svlen == -1:
-                svlen = 0 
+            raw_svlen = t[43].strip()
+            svlen = 0 if raw_svlen in ("NA", "", "-1") else int(raw_svlen)
             if svtype == "DEL":
                 svlen = -svlen
 
