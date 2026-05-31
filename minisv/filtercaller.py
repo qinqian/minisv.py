@@ -223,11 +223,19 @@ def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
             (eval1(opt, bed_sv, t.ctg2, t.pos2, t) > 0 if t.ctg2 in bed_sv else False)
         )
 
-        # Path 2: point-in-interval against same-chrom gnomAD records.
+        # type agnostic Path 2 is not necessary any more.
+        ## Path 2: point-in-interval against same-chrom gnomAD records.
+        #hit1 = (t.ctg in bed_pt and
+        #        len(iit_overlap(bed_pt[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0)
+        #hit2 = (t.ctg2 in bed_pt and
+        #        len(iit_overlap(bed_pt[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0)
+        #hit_pt = (hit1 and hit2) if both_ends else (hit1 or hit2)
+
+        # type specific Path 2
         hit1 = (t.ctg in bed_pt and
-                len(iit_overlap(bed_pt[t.ctg], t.pos - pad, t.pos + 1 + pad)) > 0)
+                eval1(opt, bed_pt, t.ctg, t.pos, t) > 0)
         hit2 = (t.ctg2 in bed_pt and
-                len(iit_overlap(bed_pt[t.ctg2], t.pos2 - pad, t.pos2 + 1 + pad)) > 0)
+                eval1(opt, bed_pt, t.ctg2, t.pos2, t) > 0)
         hit_pt = (hit1 and hit2) if both_ends else (hit1 or hit2)
 
         if n_sv or hit_pt:

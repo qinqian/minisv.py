@@ -897,6 +897,12 @@ def gc_read_bed(fn, is_gnomad=False, gnomad_af=0.01):
             if af < gnomad_af:
                 continue
             svtype = t[4]
+            svlen = int(t[43])
+            if svlen == -1:
+                svlen = 0 
+            if svtype == "DEL":
+                svlen = -svlen
+
             ctg2_raw = t[9]
             if ctg2_raw != 'NA' and ctg2_raw != t[0]:
                 # cross-chrom: index on both ends for SV-identity matching.
@@ -910,7 +916,7 @@ def gc_read_bed(fn, is_gnomad=False, gnomad_af=0.01):
                     ctg2=ctg2_raw, pos2=pos2,
                     ori=">>",
                     SVTYPE=svtype,
-                    SVLEN=0,
+                    SVLEN=svlen,
                     inv=(svtype == 'INV'),
                     count=0, vaf=1,
                     svid=t[3],
@@ -921,8 +927,21 @@ def gc_read_bed(fn, is_gnomad=False, gnomad_af=0.01):
                     {"st": pos2, "en": pos2 + 1, "data": s})
             else:
                 # same-chrom (or CHR2 == NA): point-overlap tree (current behavior)
+                s = svinfo(
+                    ctg=t[0],
+                    pos=int(t[1]),
+                    ctg2=t[0],
+                    pos2=int(t[2]),
+                    ori=">>",
+                    SVTYPE=svtype,
+                    SVLEN=svlen,
+                    inv=(svtype == 'INV'),
+                    count=0,
+                    vaf=1,  # MSV do not have VAF
+                    svid=t[3]
+                )
                 h_pt.setdefault(t[0], []).append(
-                    {"st": int(t[1]), "en": int(t[2]), "data": None})
+                    {"st": int(t[1]), "en": int(t[2]), "data": s})
         f.close()
         if n_skip:
             import sys as _sys
