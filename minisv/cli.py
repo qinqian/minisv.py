@@ -68,6 +68,7 @@ class unionopt:
     print_sv: bool = False
     collapsed: bool = False
 
+
 @dataclass
 class EvalOpt:
     min_len: int = 100
@@ -85,6 +86,7 @@ class EvalOpt:
     merge: bool = False
     svid: str = ""
     only_readname: bool = False
+    max_diff_len: int = 1000
     gnomad_af: float = 0.01   # AF cutoff for gc_read_bed(is_gnomad=True)
 
 
@@ -525,7 +527,7 @@ def filterasm(
 @click.option("-e", is_flag=True, help="print errors")
 @click.option("-a", is_flag=True, help="print all")
 @click.option("--both", is_flag=True, help="drop only if both breakpoints overlap")
-@click.option("--pad", required=False, default=0, type=int, help="expand BED regions by INT bp")
+@click.option("--pad", required=False, default=10, type=int, help="expand BED regions by INT bp")
 @click.option("--gnomadaf", required=False, default=0.01, type=float,
               help="keep gnomAD-SV rows with AF >= FLOAT (default 0.01)")
 @click.argument("gnomad_bed", type=str, nargs=1)
@@ -696,7 +698,7 @@ def test_sv_filter(
 )
 @click.option("-c", required=False, default=3, type=int, help="minimum sv counts")
 @click.option("-g", required=False, default=5, type=int, help="min group read count")
-@click.option("--uc", required=False, default=5, type=int, help="union sv counts")
+@click.option("--uc", required=False, default=7, type=int, help="union sv counts")
 @click.option("-F", "--ignoreflt", is_flag=True, help="ignore VCF filter")
 @click.option("-G", "--gt", is_flag=True, help="check GT")
 @click.option("-w", required=False, default=500, type=int, help="window size")

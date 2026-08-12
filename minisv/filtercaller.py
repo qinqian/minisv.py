@@ -209,7 +209,7 @@ def _gnomad_same_chrom_hit(opt, bed_pt, ctg, pos, t, pad):
     return False
 
 
-def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=0, out=None):
+def gnomad_filter(vcf_file, gnomad_bed, opt, both_ends=False, pad=10, out=None):
     """Drop caller VCF calls that overlap a gnomAD-SV record.
 
     Cross-chrom gnomAD rows (CHR2 != chrom): matched via eval1/gc_cmp_same_sv1
